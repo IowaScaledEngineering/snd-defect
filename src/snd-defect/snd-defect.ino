@@ -12,8 +12,8 @@
 	char enter4[512] = "7 7 7 point 7";
 
 
-// 10 sec WDT
-#define WDT_TIMEOUT 10
+// 3 sec WDT
+#define WDT_TIMEOUT 3
 
 #include "sound.h"
 #include "vocab/vocab.h"
@@ -59,6 +59,10 @@ i2s_port_t i2s_num = I2S_NUM_0;
 #define EN3_INPUT     0x40
 #define EN4_INPUT     0x80
 
+// Debounce in 10ms increments
+#define RISE_DEBOUNCE 50
+#define FALL_DEBOUNCE 300
+
 volatile uint8_t buttonsPressed = 0;
 volatile bool riseEn1 = false;
 volatile bool riseEn2 = false;
@@ -75,8 +79,8 @@ volatile bool fallEn4 = false;
 
 uint8_t volumeStep = 0;
 volatile uint16_t volume = 0;
-uint8_t volumeUpCoef = 0;
-uint8_t volumeDownCoef = 0;
+uint8_t volumeUpCoef = 10;
+uint8_t volumeDownCoef = 8;
 
 uint16_t volumeLevels[] = {
 	0,			// 0
@@ -208,6 +212,8 @@ hw_timer_t * timer = NULL;
 void IRAM_ATTR processVolume(void)
 {
 	static uint8_t oldButtonsPressed = 0;
+	static uint8_t buttonsDebounced = 0;
+	static uint32_t debounceCount1 = 0;
 	static unsigned long pressTime = 0;
 	uint8_t inputStatus = 0;
 
@@ -349,46 +355,6 @@ void IRAM_ATTR processVolume(void)
 				Serial.println("");
 				break;
 
-/*
-			case 'd':
-				if(volumeUpCoef < 255)
-				{
-					volumeUpCoef++;
-					preferences.putUChar("volumeUp", volumeUpCoef);
-				}
-				Serial.print("Volume Up Coef: ");
-				Serial.println(volumeUpCoef);
-				break;
-			case 'c':
-				if(volumeUpCoef > 1)
-				{
-					volumeUpCoef--;
-					preferences.putUChar("volumeUp", volumeUpCoef);
-				}
-				Serial.print("Volume Up Coef: ");
-				Serial.println(volumeUpCoef);
-				break;
-
-			case 'f':
-				if(volumeDownCoef < 255)
-				{
-					volumeDownCoef++;
-					preferences.putUChar("volumeDown", volumeDownCoef);
-				}
-				Serial.print("Volume Down Coef: ");
-				Serial.println(volumeDownCoef);
-				break;
-			case 'v':
-				if(volumeDownCoef > 1)
-				{
-					volumeDownCoef--;
-					preferences.putUChar("volumeDown", volumeDownCoef);
-				}
-				Serial.print("Volume Down Coef: ");
-				Serial.println(volumeDownCoef);
-				break;
-*/
-
 			case 'q':
 				restart = true;
 				break;
@@ -404,17 +370,52 @@ void IRAM_ATTR processVolume(void)
 		digitalWrite(LEDA, 0);
 	}
 
-	// Find rising edge of EN1
-	if((buttonsPressed ^ oldButtonsPressed) & (buttonsPressed & EN1_INPUT))
+
+	if(buttonsDebounced & EN1_INPUT)
 	{
-		riseEn1 = true;
+		// EN1 state high, looking for low
+		if(!(buttonsPressed & EN1_INPUT))
+		{
+			// EN1 input low
+			if(debounceCount1)
+				debounceCount1--;
+			else
+			{
+				// Debounce expired, switch state
+				buttonsDebounced &= ~EN1_INPUT;
+				fallEn1 = true;
+				debounceCount1 = RISE_DEBOUNCE;
+			}
+		}
+		else
+		{
+			// EN1 input high, reset
+			debounceCount1 = FALL_DEBOUNCE;
+		}
+	}
+	else
+	{
+		// EN1 state low, looking for high
+		if(buttonsPressed & EN1_INPUT)
+		{
+			// EN1 input high
+			if(debounceCount1)
+				debounceCount1--;
+			else
+			{
+				// Debounce expired, switch state
+				buttonsDebounced |= EN1_INPUT;
+				riseEn1 = true;
+				debounceCount1 = FALL_DEBOUNCE;
+			}
+		}
+		else
+		{
+			// EN1 input low, reset
+			debounceCount1 = RISE_DEBOUNCE;
+		}
 	}
 
-	// Find falling edge of EN1
-	if((buttonsPressed ^ oldButtonsPressed) & ~(buttonsPressed | ~EN1_INPUT))
-	{
-		fallEn1 = true;
-	}
 
 	// Find rising edge of EN2
 	if((buttonsPressed ^ oldButtonsPressed) & (buttonsPressed & EN2_INPUT))
@@ -503,7 +504,7 @@ void setup()
 	pinMode(AUX4, OUTPUT);
 	pinMode(AUX5, OUTPUT);
 
-	esp_task_wdt_init(WDT_TIMEOUT, true);	// 1s timeout
+	esp_task_wdt_init(WDT_TIMEOUT, true);
 	esp_task_wdt_add(NULL); //add current thread to WDT watch
 	esp_task_wdt_reset();
 
@@ -575,14 +576,29 @@ int16_t generateNoise(void)
 	return noiseValue;
 }
 
+void sendSampleToI2S(int32_t sampleValue)
+{
+	uint32_t outputValue;
+	size_t bytesWritten;
+
+	sampleValue += generateNoise();
+	int32_t adjustedValue = sampleValue * volume / volumeLevels[VOL_STEP_NOM];
+	if(adjustedValue > 32767)
+		sampleValue = 32767;
+	else if(adjustedValue < -32768)
+		sampleValue = -32768;
+	else
+		sampleValue = adjustedValue;
+	// Combine into 32 bit word (left & right)
+	outputValue = (sampleValue<<16) | (sampleValue & 0xffff);
+	i2s_write(i2s_num, &outputValue, 4, &bytesWritten, portMAX_DELAY);
+}
 
 void play(Sound *wavSound)
 {
 	size_t i;
 	size_t bytesRead;
 	uint8_t fileBuffer[FILE_BUFFER_SIZE];
-	uint32_t outputValue;
-	size_t bytesWritten;
 
 	esp_task_wdt_reset();
 
@@ -598,18 +614,7 @@ void play(Sound *wavSound)
 			esp_task_wdt_reset();
 			// File is read on a byte basis, so convert into int16 samples, and step every 2 bytes
 			int32_t sampleValue = *((int16_t *)(fileBuffer+i));
-			// FIXME: volume adjustment and i2s_write can be a separate function
-			sampleValue += generateNoise();
-			int32_t adjustedValue = sampleValue * volume / volumeLevels[VOL_STEP_NOM];
-			if(adjustedValue > 32767)
-				sampleValue = 32767;
-			else if(adjustedValue < -32768)
-				sampleValue = -32768;
-			else
-				sampleValue = adjustedValue;
-			// Combine into 32 bit word (left & right)
-			outputValue = (sampleValue<<16) | (sampleValue & 0xffff);
-			i2s_write(i2s_num, &outputValue, 4, &bytesWritten, portMAX_DELAY);
+			sendSampleToI2S(sampleValue);
 		}
 		if(restart)
 			break;	// Stop playing and return to the main loop
@@ -624,8 +629,6 @@ int16_t sineWave[8] = {0, 12539, 23170, 30273, 32767, 30273, 23170, 12539};
 void playTone(uint8_t decisecs, uint8_t amplitude)
 {
 	uint32_t i, j;
-	uint32_t outputValue;
-	size_t bytesWritten;
 	bool invert = false;
 	int32_t sampleValue;
 	
@@ -641,23 +644,11 @@ void playTone(uint8_t decisecs, uint8_t amplitude)
 			else
 				sampleValue = sineWave[j];
 			sampleValue = sampleValue * amplitude / 8;
-			// FIXME: volume adjustment and i2s_write can be a separate function
-			sampleValue += generateNoise();
-			int32_t adjustedValue = sampleValue * volume / volumeLevels[VOL_STEP_NOM];
-			if(adjustedValue > 32767)
-				sampleValue = 32767;
-			else if(adjustedValue < -32768)
-				sampleValue = -32768;
-			else
-				sampleValue = adjustedValue;
-			// Combine into 32 bit word (left & right)
-			outputValue = (sampleValue<<16) | (sampleValue & 0xffff);
-			i2s_write(i2s_num, &outputValue, 4, &bytesWritten, portMAX_DELAY);
-
-			if(restart)
-				break;	// Stop playing and return to the main loop
+			sendSampleToI2S(sampleValue);
 		}
 		invert = !invert;
+		if(restart)
+			break;	// Stop playing and return to the main loop
 	}
 }
 
@@ -665,8 +656,6 @@ void playTone(uint8_t decisecs, uint8_t amplitude)
 void playSilence(uint8_t decisecs)
 {
 	uint32_t i;
-	uint32_t outputValue;
-	size_t bytesWritten;
 	uint32_t totalSamples;
 	
 	esp_task_wdt_reset();
@@ -676,19 +665,7 @@ void playSilence(uint8_t decisecs)
 	for(i=0; i<totalSamples; i++)
 	{
 		esp_task_wdt_reset();
-		// FIXME: volume adjustment and i2s_write can be a separate function
-		int32_t sampleValue = generateNoise();
-		int32_t adjustedValue = sampleValue * volume / volumeLevels[VOL_STEP_NOM];
-		if(adjustedValue > 32767)
-			sampleValue = 32767;
-		else if(adjustedValue < -32768)
-			sampleValue = -32768;
-		else
-			sampleValue = adjustedValue;
-		// Combine into 32 bit word (left & right)
-		outputValue = (sampleValue<<16) | (sampleValue & 0xffff);
-		i2s_write(i2s_num, &outputValue, 4, &bytesWritten, portMAX_DELAY);
-
+		sendSampleToI2S(0);
 		if(restart)
 			break;	// Stop playing and return to the main loop
 	}
@@ -728,20 +705,6 @@ void loop()
 	lowPassCoef = preferences.getUChar("lowPassCoef", 10);
 	highPassCoef = preferences.getUChar("highPassCoef", 10);
 
-	volumeUpCoef = preferences.getUChar("volumeUp", 10);
-	if(0 == volumeUpCoef)
-	{
-		volumeUpCoef = 1;
-		preferences.putUChar("volumeUp", volumeUpCoef);
-	}
-
-	volumeDownCoef = preferences.getUChar("volumeDown", 8);
-	if(0 == volumeDownCoef)
-	{
-		volumeDownCoef = 1;
-		preferences.putUChar("volumeDown", volumeDownCoef);
-	}
-
 	esp_task_wdt_reset();
 
 	// Check SD card
@@ -763,14 +726,6 @@ void loop()
 				if (0 == strcmp(keyStr, "noiseLevel"))
 				{
 					noiseLevel = atoi(valueStr) / 100;
-				}
-				else if (0 == strcmp(keyStr, "volumeUp"))
-				{
-					volumeUpCoef = atoi(valueStr);
-				}
-				else if (0 == strcmp(keyStr, "volumeDown"))
-				{
-					volumeDownCoef = atoi(valueStr);
 				}
 			}
 		}
@@ -882,10 +837,6 @@ void loop()
 	Serial.println(lowPassCoef);
 	Serial.print("High Pass Coef: ");
 	Serial.println(highPassCoef);
-	Serial.print("Volume Up Coef: ");
-	Serial.println(volumeUpCoef);
-	Serial.print("Volume Down Coef: ");
-	Serial.println(volumeDownCoef);
 
 	Serial.println("");
 
@@ -942,27 +893,48 @@ void loop()
 		// FIXME: turn into a queue of events?  That way they will process in the same order as they happen.  But risk of overflowing queue.
 		if(riseEn1)
 		{
-			Serial.println("Input 1");
+			Serial.println("Input 1 Enter");
 			str = strdup(enter1);
 			riseEn1 = false;
 		}
 		else if(riseEn2)
 		{
-			Serial.println("Input 2");
+			Serial.println("Input 2 Enter");
 			str = strdup(enter2);
 			riseEn2 = false;
 		}
 		else if(riseEn3)
 		{
-			Serial.println("Input 3");
+			Serial.println("Input 3 Enter");
 			str = strdup(enter3);
 			riseEn3 = false;
 		}
 		else if(riseEn4)
 		{
-			Serial.println("Input 4");
+			Serial.println("Input 4 Enter");
 			str = strdup(enter4);
 			riseEn4 = false;
+		}
+
+		if(fallEn1)
+		{
+			Serial.println("Input 1 Exit");
+			fallEn1 = false;
+		}
+		else if(riseEn2)
+		{
+			Serial.println("Input 2 Exit");
+			fallEn2 = false;
+		}
+		else if(riseEn3)
+		{
+			Serial.println("Input 3 Exit");
+			fallEn3 = false;
+		}
+		else if(riseEn4)
+		{
+			Serial.println("Input 4 Exit");
+			fallEn4 = false;
 		}
 
 		if(NULL != str)
@@ -1085,8 +1057,8 @@ void loop()
 				{
 					Serial.print(" ***");
 				}
-				// Get next token
 
+				// Get next token
 				token = strtok(NULL, " ");
 			}
 
@@ -1110,6 +1082,5 @@ void loop()
 		}
 
 	}
-	i2s_driver_uninstall(i2s_num);  // Only get here in a restart
 }
 
