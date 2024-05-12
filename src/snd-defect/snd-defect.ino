@@ -6,10 +6,17 @@
 #include "esp_task_wdt.h"
 
 
+/*
 	char enter1[512] = "#rand10,99 #pause500 #TONE250,99 #PAUSE500 #TONE250,8 #PAUSE500 #TONE250,6 #PAUSE500 #TONE250,4 #PAUSE500 #TONE250,2 #PAUSE500 #TONE250,0 #PAUSE500 point 5";
 	char enter2[512] = "#rand40,10";
 	char enter3[512] = "4 4 4 point 4";
 	char enter4[512] = "7 7 7 point 7";
+*/
+
+	char enter1[512] = "#TONE250,5 #PAUSE500 1";
+	char enter2[512] = "#TONE250,5 #PAUSE500 2";
+	char enter3[512] = "#TONE250,5 #PAUSE500 3";
+	char enter4[512] = "#TONE250,5 #PAUSE500 4";
 
 
 // 3 sec WDT
@@ -63,7 +70,6 @@ i2s_port_t i2s_num = I2S_NUM_0;
 #define RISE_DEBOUNCE 50
 #define FALL_DEBOUNCE 300
 
-volatile uint8_t buttonsPressed = 0;
 volatile bool riseEn1 = false;
 volatile bool riseEn2 = false;
 volatile bool riseEn3 = false;
@@ -207,13 +213,65 @@ bool configKeyValueSplit(char* key, uint32_t keySz, char* value, uint32_t valueS
 	return true;
 }
 
+void timerDebounce(uint8_t *buttonsPressed, uint8_t *buttonsDebounced, uint8_t mask, uint32_t *count, volatile bool *riseEn, volatile bool *fallEn)
+{
+	if(*buttonsDebounced & mask)
+	{
+		// EN state high, looking for low
+		if(!(*buttonsPressed & mask))
+		{
+			// EN input low
+			if(*count)
+				(*count)--;
+			else
+			{
+				// Debounce expired, switch state
+				*buttonsDebounced &= ~mask;
+				*fallEn = true;
+				*count = RISE_DEBOUNCE;
+			}
+		}
+		else
+		{
+			// EN input high, reset
+			*count = FALL_DEBOUNCE;
+		}
+	}
+	else
+	{
+		// EN1 state low, looking for high
+		if(*buttonsPressed & mask)
+		{
+			// EN input high
+			if(*count)
+				(*count)--;
+			else
+			{
+				// Debounce expired, switch state
+				*buttonsDebounced |= mask;
+				*riseEn = true;
+				*count = FALL_DEBOUNCE;
+			}
+		}
+		else
+		{
+			// EN1 input low, reset
+			*count = RISE_DEBOUNCE;
+		}
+	}
+}
+
 hw_timer_t * timer = NULL;
 
 void IRAM_ATTR processVolume(void)
 {
+	static uint8_t buttonsPressed = 0;
 	static uint8_t oldButtonsPressed = 0;
 	static uint8_t buttonsDebounced = 0;
 	static uint32_t debounceCount1 = 0;
+	static uint32_t debounceCount2 = 0;
+	static uint32_t debounceCount3 = 0;
+	static uint32_t debounceCount4 = 0;
 	static unsigned long pressTime = 0;
 	uint8_t inputStatus = 0;
 
@@ -370,88 +428,10 @@ void IRAM_ATTR processVolume(void)
 		digitalWrite(LEDA, 0);
 	}
 
-
-	if(buttonsDebounced & EN1_INPUT)
-	{
-		// EN1 state high, looking for low
-		if(!(buttonsPressed & EN1_INPUT))
-		{
-			// EN1 input low
-			if(debounceCount1)
-				debounceCount1--;
-			else
-			{
-				// Debounce expired, switch state
-				buttonsDebounced &= ~EN1_INPUT;
-				fallEn1 = true;
-				debounceCount1 = RISE_DEBOUNCE;
-			}
-		}
-		else
-		{
-			// EN1 input high, reset
-			debounceCount1 = FALL_DEBOUNCE;
-		}
-	}
-	else
-	{
-		// EN1 state low, looking for high
-		if(buttonsPressed & EN1_INPUT)
-		{
-			// EN1 input high
-			if(debounceCount1)
-				debounceCount1--;
-			else
-			{
-				// Debounce expired, switch state
-				buttonsDebounced |= EN1_INPUT;
-				riseEn1 = true;
-				debounceCount1 = FALL_DEBOUNCE;
-			}
-		}
-		else
-		{
-			// EN1 input low, reset
-			debounceCount1 = RISE_DEBOUNCE;
-		}
-	}
-
-
-	// Find rising edge of EN2
-	if((buttonsPressed ^ oldButtonsPressed) & (buttonsPressed & EN2_INPUT))
-	{
-		riseEn2 = true;
-	}
-
-	// Find falling edge of EN2
-	if((buttonsPressed ^ oldButtonsPressed) & ~(buttonsPressed | ~EN2_INPUT))
-	{
-		fallEn2 = true;
-	}
-
-	// Find rising edge of EN3
-	if((buttonsPressed ^ oldButtonsPressed) & (buttonsPressed & EN3_INPUT))
-	{
-		riseEn3 = true;
-	}
-
-	// Find falling edge of EN3
-	if((buttonsPressed ^ oldButtonsPressed) & ~(buttonsPressed | ~EN3_INPUT))
-	{
-		fallEn3 = true;
-	}
-
-	// Find rising edge of EN4
-	if((buttonsPressed ^ oldButtonsPressed) & (buttonsPressed & EN4_INPUT))
-	{
-		riseEn4 = true;
-	}
-
-	// Find falling edge of EN4
-	if((buttonsPressed ^ oldButtonsPressed) & ~(buttonsPressed | ~EN4_INPUT))
-	{
-		fallEn4 = true;
-	}
+	timerDebounce(&buttonsPressed, &buttonsDebounced, EN1_INPUT, &debounceCount1, &riseEn1, &fallEn1);
+	timerDebounce(&buttonsPressed, &buttonsDebounced, EN2_INPUT, &debounceCount2, &riseEn2, &fallEn2);
+	timerDebounce(&buttonsPressed, &buttonsDebounced, EN3_INPUT, &debounceCount3, &riseEn3, &fallEn3);
+	timerDebounce(&buttonsPressed, &buttonsDebounced, EN4_INPUT, &debounceCount4, &riseEn4, &fallEn4);
 
 	// Process volume
 	uint16_t deltaVolume;
@@ -921,17 +901,17 @@ void loop()
 			Serial.println("Input 1 Exit");
 			fallEn1 = false;
 		}
-		else if(riseEn2)
+		else if(fallEn2)
 		{
 			Serial.println("Input 2 Exit");
 			fallEn2 = false;
 		}
-		else if(riseEn3)
+		else if(fallEn3)
 		{
 			Serial.println("Input 3 Exit");
 			fallEn3 = false;
 		}
-		else if(riseEn4)
+		else if(fallEn4)
 		{
 			Serial.println("Input 4 Exit");
 			fallEn4 = false;
