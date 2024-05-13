@@ -6,22 +6,16 @@
 #include "esp_task_wdt.h"
 
 
-/*
-	char enter1[512] = "#rand10,99 #pause500 #TONE250,99 #PAUSE500 #TONE250,8 #PAUSE500 #TONE250,6 #PAUSE500 #TONE250,4 #PAUSE500 #TONE250,2 #PAUSE500 #TONE250,0 #PAUSE500 point 5";
-	char enter2[512] = "#rand40,10";
-	char enter3[512] = "4 4 4 point 4";
-	char enter4[512] = "7 7 7 point 7";
-*/
-
-	char enter1[512] = "Defect Detector Activated #TONE250,5";
 //	char enter1[512] = "#TONE100000,8";
+//	char enter1[512] = "#pause10000000";
+	char enter1[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5";
 	char enter2[512] = "Defect Detector Activated #TONE250,5";
-	char enter3[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5";
+	char enter3[512] = "Defect Detector Activated #TONE250,5";
 	char enter4[512] = "#TONE250,5 #PAUSE500 4";
 
-	char exit1[512] = "Defect Detector #TONE250,5 No Defects Repeat No Defects Detector Out";
-	char exit2[512] = "Defect Detector #TONE1000,5 Defect Detected Stop And Inspect Train #TONE1000,5 Defect Detected Stop And Inspect Train";
-	char exit3[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5 #PAUSE500 No Defects #RAND175,280 axles temperature minus #rand5,20 degrees #PAUSE500 detector out";
+	char exit1[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5 #PAUSE500 No Defects total axles #RAND175,280 temperature minus #rand5,20 degrees detector out";
+	char exit2[512] = "Defect Detector #TONE250,5 No Defects Repeat No Defects Detector Out";
+	char exit3[512] = "Defect Detector #TONE1000,5 Defect Detected Stop And Inspect Train #TONE1000,5 Defect Detected Stop And Inspect Train";
 	char exit4[512] = "";
 
 
@@ -133,6 +127,8 @@ bool restart = false;
 uint8_t enableAudio = 0;							// 0 or 1
 
 uint8_t noiseLevel = 0;
+uint8_t noiseHPF = 0;
+uint8_t noiseLPF = 0;
 
 Preferences preferences;
 
@@ -375,6 +371,48 @@ void IRAM_ATTR processVolume(void)
 				Serial.println("");
 				break;
 
+			case 's':
+				if(noiseHPF < 100)
+				{
+					noiseHPF++;
+					preferences.putUChar("noiseHPF", noiseHPF);
+				}
+				Serial.print("Noise HPF: ");
+				Serial.print(noiseHPF);
+				Serial.println("");
+				break;
+			case 'x':
+				if(noiseHPF > 0)
+				{
+					noiseHPF--;
+					preferences.putUChar("noiseHPF", noiseHPF);
+				}
+				Serial.print("Noise HPF: ");
+				Serial.print(noiseHPF);
+				Serial.println("");
+				break;
+
+			case 'd':
+				if(noiseLPF < 100)
+				{
+					noiseLPF++;
+					preferences.putUChar("noiseLPF", noiseLPF);
+				}
+				Serial.print("Noise LPF: ");
+				Serial.print(noiseLPF);
+				Serial.println("");
+				break;
+			case 'c':
+				if(noiseLPF > 0)
+				{
+					noiseLPF--;
+					preferences.putUChar("noiseLPF", noiseLPF);
+				}
+				Serial.print("Noise LPF: ");
+				Serial.print(noiseLPF);
+				Serial.println("");
+				break;
+
 			case 'q':
 				restart = true;
 				break;
@@ -506,14 +544,17 @@ void disableAmplifier(void)
 
 int16_t generateNoise(void)
 {
-	static int16_t noiseValue = 0;  // static so the value and filter are consistent over time
-	static int16_t noisePrevious = 0;
+	static int32_t noiseOutput = 0;  // static so the value and filter are consistent over time
+	static int32_t noisePrevious = 0;
 
-	int16_t noise = random(0, noiseLevel * 100) - (noiseLevel * 50);
-	noiseValue = (noiseValue + (noise - noisePrevious)) * 5 / 10;   // high pass: alpha = fs / (2*pi*fc + fs)
-	noisePrevious = noise;
+	int32_t noiseSample = random(0, noiseLevel * 100) - (noiseLevel * 50);
+	int32_t highPassOutput = (noiseOutput + (noiseSample - noisePrevious)) * 50 / 100;   // high pass: alpha = fs / (2*pi*fc + fs)
+	int32_t lowPassOutput = noiseOutput + ((highPassOutput - noiseOutput) * 100 / 100);   // low pass:  alpha = 2*pi*fc / (2*pi*fc + fs)
+
+	noisePrevious = noiseSample;
+	noiseOutput = lowPassOutput;
 	
-	return noiseValue;
+	return noiseOutput;
 }
 
 void sendSampleToI2S(int32_t sampleValue)
@@ -604,7 +645,7 @@ void playTone(uint32_t decisecs, uint8_t amplitude)
 }
 
 
-void playSilence(uint8_t decisecs)
+void playSilence(uint32_t decisecs)
 {
 	uint32_t i;
 	uint32_t totalSamples;
@@ -623,6 +664,25 @@ void playSilence(uint8_t decisecs)
 }
 
 
+Sound * findSound(std::vector<Sound *> *vocab, char *needle)
+{
+	size_t i;
+	for(i=0; i<vocab->size(); i++)
+	{
+		if((*vocab)[i]->matchName(needle))
+		{
+			Serial.print(' ');
+			Serial.print(needle);
+			return (*vocab)[i];
+		}
+	}
+	Serial.print(" ***");
+	Serial.print(needle);
+	Serial.print("***");
+	return NULL;
+}
+
+
 void loop()
 {
 	bool usingSdSounds = false;
@@ -634,9 +694,10 @@ void loop()
 	uint32_t sampleRate = 0;
 	uint16_t bitsPerSample = 0;
 	uint32_t wavDataSize = 0;
-	size_t i;
+//	size_t i;
 
 	std::vector<Sound *> vocab;
+	Sound *phrase;
 
 	esp_task_wdt_reset();
 	timerAlarmDisable(timer);
@@ -653,6 +714,8 @@ void loop()
 	preferences.begin("squeal", false);
 	volumeStep = preferences.getUChar("volume", VOL_STEP_NOM);
 	noiseLevel = preferences.getUChar("noiseLevel", 50);
+	noiseHPF = preferences.getUChar("noiseHPF", 100);
+	noiseLPF = preferences.getUChar("noiseLPF", 100);
 
 	esp_task_wdt_reset();
 
@@ -782,6 +845,10 @@ void loop()
 	Serial.println(volumeStep);
 	Serial.print("Noise Level: ");
 	Serial.println(noiseLevel * 100);
+	Serial.print("Noise HPF: ");
+	Serial.println(noiseHPF);
+	Serial.print("Noise LPF: ");
+	Serial.println(noiseLPF);
 
 	Serial.println("");
 
@@ -898,8 +965,6 @@ void loop()
 
 			while( token != NULL )
 			{
-				bool valid = false;
-				
 				if('#' == token[0])
 				{
 					// Command
@@ -909,7 +974,6 @@ void loop()
 						char *charPtr = strchr(token, ',');
 						if(NULL != charPtr)
 						{
-							valid = true;
 							*charPtr = 0;  // Null terminate at comma
 							uint32_t numA = atoi(&token[5]);
 							uint32_t numB = atoi(charPtr + 1);
@@ -922,16 +986,12 @@ void loop()
 							charPtr = randomNumber;
 							while(0 != *charPtr)
 							{
-								char testChar[2];
-								testChar[0] = *charPtr;  // Make 1 character long string to "speak"
-								testChar[1] = 0;
-								for(i=0; i<vocab.size(); i++)
-								{
-									if(vocab[i]->matchName(testChar))
-									{
-										play(vocab[i]);
-									}
-								}
+								char testString[2];
+								testString[0] = *charPtr;  // Make 1 character long string to "speak"
+								testString[1] = 0;
+								phrase = findSound(&vocab, testString);
+								if(NULL != phrase)
+									play(phrase);
 								charPtr++;
 							}
 						}
@@ -939,12 +999,11 @@ void loop()
 					else if(!strncmp("pause", &token[1], 5))
 					{
 						// Pause
-						valid = true;
 						uint32_t numA = atoi(&token[6]);
 						numA = numA / 100;  // Convert to decisecs
 						Serial.print(" PAUSE(");
 						Serial.print(numA * 100);
-						Serial.print(")");
+						Serial.print("ms)");
 						playSilence(numA);
 					}
 					else if(!strncmp("tone", &token[1], 4))
@@ -953,7 +1012,6 @@ void loop()
 						char *charPtr = strchr(token, ',');
 						if(NULL != charPtr)
 						{
-							valid = true;
 							*charPtr = 0;  // Null terminate at comma
 							uint32_t numA = atoi(&token[5]);  // duration
 							uint32_t numB = atoi(charPtr + 1);   // amplitude
@@ -964,28 +1022,18 @@ void loop()
 								numB = 8;
 							Serial.print(" TONE(");
 							Serial.print(numA * 100);
-							Serial.print(",");
+							Serial.print("ms,");
 							Serial.print(numB);
 							Serial.print(")");
 							playTone(numA, numB);
 						}
 					}
 				}
-
-				for(i=0; i<vocab.size(); i++)
+				else
 				{
-					if(vocab[i]->matchName(token))
-					{
-						valid = true;
-						Serial.print(' ');
-						Serial.print(token);
-						play(vocab[i]);
-					}
-				}
-
-				if(!valid)
-				{
-					Serial.print(" ***");
+					phrase = findSound(&vocab, token);
+					if(NULL != phrase)
+						play(phrase);
 				}
 
 				// Get next token
