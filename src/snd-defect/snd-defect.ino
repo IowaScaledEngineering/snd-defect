@@ -13,17 +13,23 @@
 	char enter4[512] = "7 7 7 point 7";
 */
 
-	char enter1[512] = "#TONE250,5 #PAUSE500 1";
-	char enter2[512] = "#TONE250,5 #PAUSE500 2";
-	char enter3[512] = "#TONE250,5 #PAUSE500 3";
+	char enter1[512] = "Defect Detector Activated #TONE250,5";
+//	char enter1[512] = "#TONE100000,8";
+	char enter2[512] = "Defect Detector Activated #TONE250,5";
+	char enter3[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5";
 	char enter4[512] = "#TONE250,5 #PAUSE500 4";
+
+	char exit1[512] = "Defect Detector #TONE250,5 No Defects Repeat No Defects Detector Out";
+	char exit2[512] = "Defect Detector #TONE1000,5 Defect Detected Stop And Inspect Train #TONE1000,5 Defect Detected Stop And Inspect Train";
+	char exit3[512] = "C R N W Detector Milepost 1 6 4 point 5 #TONE250,5 #PAUSE500 No Defects #RAND175,280 axles temperature minus #rand5,20 degrees #PAUSE500 detector out";
+	char exit4[512] = "";
 
 
 // 3 sec WDT
 #define WDT_TIMEOUT 3
 
 #include "sound.h"
-#include "vocab/vocab.h"
+#include "vocab/vocab-includes.h"
 
 // Samples for each buffer
 #define AUDIO_BUFFER_SIZE 512
@@ -67,8 +73,8 @@ i2s_port_t i2s_num = I2S_NUM_0;
 #define EN4_INPUT     0x80
 
 // Debounce in 10ms increments
-#define RISE_DEBOUNCE 50
-#define FALL_DEBOUNCE 300
+#define RISE_DEBOUNCE 25
+#define FALL_DEBOUNCE 200
 
 volatile bool riseEn1 = false;
 volatile bool riseEn2 = false;
@@ -127,22 +133,20 @@ bool restart = false;
 uint8_t enableAudio = 0;							// 0 or 1
 
 uint8_t noiseLevel = 0;
-uint8_t lowPassCoef = 10;
-uint8_t highPassCoef = 10;
 
 Preferences preferences;
 
 uint8_t debounce(uint8_t debouncedState, uint8_t newInputs)
 {
 	static uint8_t clock_A = 0, clock_B = 0;
-	uint8_t delta = newInputs ^ debouncedState;	 //Find all of the changes
+	uint8_t delta = newInputs ^ debouncedState;	 // Find all of the changes
 	uint8_t changes;
 
-	clock_A ^= clock_B;										 //Increment the counters
+	clock_A ^= clock_B;   // Increment the counters
 	clock_B	= ~clock_B;
 
-	clock_A &= delta;											 //Reset the counters if no changes
-	clock_B &= delta;											 //were detected.
+	clock_A &= delta;     // Reset the counters if no changes
+	clock_B &= delta;     // were detected.
 
 	changes = ~((~delta) | clock_A | clock_B);
 	debouncedState ^= changes;
@@ -371,48 +375,6 @@ void IRAM_ATTR processVolume(void)
 				Serial.println("");
 				break;
 
-			case 's':
-				if(lowPassCoef < 10)
-				{
-					lowPassCoef++;
-					preferences.putUChar("lowPassCoef", lowPassCoef);
-				}
-				Serial.print("Low Pass Coef: ");
-				Serial.print(lowPassCoef);
-				Serial.println("");
-				break;
-			case 'x':
-				if(lowPassCoef > 0)
-				{
-					lowPassCoef--;
-					preferences.putUChar("lowPassCoef", lowPassCoef);
-				}
-				Serial.print("Low Pass Coef: ");
-				Serial.print(lowPassCoef);
-				Serial.println("");
-				break;
-
-			case 'd':
-				if(highPassCoef < 10)
-				{
-					highPassCoef++;
-					preferences.putUChar("highPassCoef", highPassCoef);
-				}
-				Serial.print("High Pass Coef: ");
-				Serial.print(highPassCoef);
-				Serial.println("");
-				break;
-			case 'c':
-				if(highPassCoef > 0)
-				{
-					highPassCoef--;
-					preferences.putUChar("highPassCoef", highPassCoef);
-				}
-				Serial.print("High Pass Coef: ");
-				Serial.print(highPassCoef);
-				Serial.println("");
-				break;
-
 			case 'q':
 				restart = true;
 				break;
@@ -545,12 +507,10 @@ void disableAmplifier(void)
 int16_t generateNoise(void)
 {
 	static int16_t noiseValue = 0;  // static so the value and filter are consistent over time
-	static int16_t noiseValue1 = 0;
 	static int16_t noisePrevious = 0;
 
 	int16_t noise = random(0, noiseLevel * 100) - (noiseLevel * 50);
-	noiseValue1 = (noiseValue + (noise - noisePrevious)) * highPassCoef / 10;   // high pass: alpha = fs / (2*pi*fc + fs)
-	noiseValue = noiseValue + (noiseValue1 - noiseValue) * lowPassCoef / 10;    // low pass:  alpha = 2*pi*fc / (2*pi*fc + fs))
+	noiseValue = (noiseValue + (noise - noisePrevious)) * 5 / 10;   // high pass: alpha = fs / (2*pi*fc + fs)
 	noisePrevious = noise;
 	
 	return noiseValue;
@@ -564,9 +524,15 @@ void sendSampleToI2S(int32_t sampleValue)
 	sampleValue += generateNoise();
 	int32_t adjustedValue = sampleValue * volume / volumeLevels[VOL_STEP_NOM];
 	if(adjustedValue > 32767)
+	{
 		sampleValue = 32767;
+		Serial.println("\nclip+");
+	}
 	else if(adjustedValue < -32768)
+	{
 		sampleValue = -32768;
+		Serial.println("\nclip-");
+	}
 	else
 		sampleValue = adjustedValue;
 	// Combine into 32 bit word (left & right)
@@ -606,7 +572,7 @@ void play(Sound *wavSound)
 
 int16_t sineWave[8] = {0, 12539, 23170, 30273, 32767, 30273, 23170, 12539};
 
-void playTone(uint8_t decisecs, uint8_t amplitude)
+void playTone(uint32_t decisecs, uint8_t amplitude)
 {
 	uint32_t i, j;
 	bool invert = false;
@@ -614,21 +580,26 @@ void playTone(uint8_t decisecs, uint8_t amplitude)
 	
 	esp_task_wdt_reset();
 
-	for(i=0; i<(2*100); i++)  // Each cycle is 1ms, so play 200 half cycles
+	while(decisecs)
 	{
-		esp_task_wdt_reset();
-		for(j=0; j<8; j++)
+		// 100ms
+		for(i=0; i<(2*100); i++)  // Each sine cycle is 1ms, so play 200 half cycles
 		{
-			if(invert)
-				sampleValue = -sineWave[j];
-			else
-				sampleValue = sineWave[j];
-			sampleValue = sampleValue * amplitude / 8;
-			sendSampleToI2S(sampleValue);
+			esp_task_wdt_reset();
+			for(j=0; j<8; j++)
+			{
+				if(invert)
+					sampleValue = -sineWave[j];
+				else
+					sampleValue = sineWave[j];
+				sampleValue = sampleValue * amplitude / 8;
+				sendSampleToI2S(sampleValue);
+			}
+			invert = !invert;
+			if(restart)
+				break;	// Stop playing and return to the main loop
 		}
-		invert = !invert;
-		if(restart)
-			break;	// Stop playing and return to the main loop
+		decisecs--;
 	}
 }
 
@@ -682,8 +653,6 @@ void loop()
 	preferences.begin("squeal", false);
 	volumeStep = preferences.getUChar("volume", VOL_STEP_NOM);
 	noiseLevel = preferences.getUChar("noiseLevel", 50);
-	lowPassCoef = preferences.getUChar("lowPassCoef", 10);
-	highPassCoef = preferences.getUChar("highPassCoef", 10);
 
 	esp_task_wdt_reset();
 
@@ -813,10 +782,6 @@ void loop()
 	Serial.println(volumeStep);
 	Serial.print("Noise Level: ");
 	Serial.println(noiseLevel * 100);
-	Serial.print("Low Pass Coef: ");
-	Serial.println(lowPassCoef);
-	Serial.print("High Pass Coef: ");
-	Serial.println(highPassCoef);
 
 	Serial.println("");
 
@@ -839,18 +804,7 @@ void loop()
 	}
 	else
 	{
-		vocab.push_back(new MemSound("0", __0_wav, __0_wav_len, 16000));
-		vocab.push_back(new MemSound("1", __1_wav, __1_wav_len, 16000));
-		vocab.push_back(new MemSound("2", __2_wav, __2_wav_len, 16000));
-		vocab.push_back(new MemSound("3", __3_wav, __3_wav_len, 16000));
-		vocab.push_back(new MemSound("4", __4_wav, __4_wav_len, 16000));
-		vocab.push_back(new MemSound("5", __5_wav, __5_wav_len, 16000));
-		vocab.push_back(new MemSound("6", __6_wav, __6_wav_len, 16000));
-		vocab.push_back(new MemSound("7", __7_wav, __7_wav_len, 16000));
-		vocab.push_back(new MemSound("8", __8_wav, __8_wav_len, 16000));
-		vocab.push_back(new MemSound("9", __9_wav, __9_wav_len, 16000));
-		vocab.push_back(new MemSound("milepost", milepost_wav, milepost_wav_len, 16000));
-		vocab.push_back(new MemSound("point", point_wav, point_wav_len, 16000));
+		#include "vocab/vocab-vector.h"
 
 		Serial.print("Using built-in sounds (");
 		Serial.print(vocab.size());
@@ -899,21 +853,25 @@ void loop()
 		if(fallEn1)
 		{
 			Serial.println("Input 1 Exit");
+			str = strdup(exit1);
 			fallEn1 = false;
 		}
 		else if(fallEn2)
 		{
 			Serial.println("Input 2 Exit");
+			str = strdup(exit2);
 			fallEn2 = false;
 		}
 		else if(fallEn3)
 		{
 			Serial.println("Input 3 Exit");
+			str = strdup(exit3);
 			fallEn3 = false;
 		}
 		else if(fallEn4)
 		{
 			Serial.println("Input 4 Exit");
+			str = strdup(exit4);
 			fallEn4 = false;
 		}
 
@@ -965,7 +923,7 @@ void loop()
 							while(0 != *charPtr)
 							{
 								char testChar[2];
-								testChar[0] = *charPtr;
+								testChar[0] = *charPtr;  // Make 1 character long string to "speak"
 								testChar[1] = 0;
 								for(i=0; i<vocab.size(); i++)
 								{
@@ -987,10 +945,7 @@ void loop()
 						Serial.print(" PAUSE(");
 						Serial.print(numA * 100);
 						Serial.print(")");
-						while(numA--)
-						{
-							playSilence(1);	
-						}
+						playSilence(numA);
 					}
 					else if(!strncmp("tone", &token[1], 4))
 					{
@@ -1007,17 +962,12 @@ void loop()
 								numB = 1;
 							else if(numB > 8)
 								numB = 8;
-							char randomNumber[8];
-							snprintf(randomNumber, 8, "%ld", random(numA, numB+1));
 							Serial.print(" TONE(");
 							Serial.print(numA * 100);
 							Serial.print(",");
 							Serial.print(numB);
 							Serial.print(")");
-							while(numA--)
-							{
-								playTone(1, numB);	
-							}
+							playTone(numA, numB);
 						}
 					}
 				}
