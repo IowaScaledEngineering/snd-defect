@@ -1,0 +1,18 @@
+#!/bin/bash
+
+mkdir -p headers
+echo -n > vocab-includes.h
+echo -n > vocab-vector.h
+
+for fname in $(ls clips/*.wav)
+do
+    f=$(echo $(basename $fname) | sed "s/.wav//")
+    echo $f
+    xxd -i -s +$(python3 findDataSection.py clips/$f.wav) clips/$f.wav > headers/$f.h.tmp
+    cat headers/$f.h.tmp | sed "s/unsigned/const unsigned/" > headers/$f.h
+    
+    echo "#include \"headers/$f.h\"" >> vocab-includes.h
+    echo "vocab.push_back(new MemSound(\"${f}\", clips_${f}_wav, clips_${f}_wav_len, 16000));" >> vocab-vector.h
+
+    rm headers/$f.h.tmp
+done
