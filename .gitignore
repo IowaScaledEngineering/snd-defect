@@ -2,3 +2,7 @@
 *.wav
 src/build
 .vscode
+
+# Kicad stuff
+fp-info-cache
+kicad/*/*-backups
