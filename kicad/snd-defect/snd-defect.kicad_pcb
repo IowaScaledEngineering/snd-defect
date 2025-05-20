@@ -211,7 +211,7 @@
       (net 1 "Net-(C1-Pad1)") (pinfunction "1") (pintype "input") (tstamp 1216a481-9c2d-4e90-adb7-435555aa67a4))
     (pad "2" smd rect (at 2.2987 0 180) (size 2.1082 5.5626) (layers "F.Cu" "F.Paste" "F.Mask")
       (net 5 "+5V") (pinfunction "2") (pintype "input") (tstamp 0044fdae-c62c-4504-bde2-bbf5e569e179))
-    (model "/tank/data/design/projects/ise-kicad/3DModels/Coilcraft-MSS6132.step"
+    (model ":ISE_3DModels:Coilcraft-MSS6132.step"
       (offset (xyz 0 0 0))
       (scale (xyz 1 1 1))
       (rotate (xyz 90 -180 -90))
