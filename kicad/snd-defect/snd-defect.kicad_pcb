@@ -1706,7 +1706,7 @@
       (rotate (xyz 0 0 0))
     )
     (model ":ISE_3DModels:Terminal_Block_2Pos_5mm.stp"
-      (offset (xyz -2.54 -3.175 0))
+      (offset (xyz -2.4892 -3.6068 0))
       (scale (xyz 1 1 1))
       (rotate (xyz 0 0 0))
     )
@@ -2597,7 +2597,7 @@
       (rotate (xyz 0 0 0))
     )
     (model ":ISE_3DModels:Terminal_Block_2Pos_5mm.stp"
-      (offset (xyz -2.54 -3.175 0))
+      (offset (xyz -2.4892 -3.6068 0))
       (scale (xyz 1 1 1))
       (rotate (xyz 0 0 0))
     )
